@@ -1,0 +1,29 @@
+From 30ea00c39d62d17f9fd492e4b12becee3f2470db Mon Sep 17 00:00:00 2001
+From: Grigori Goronzy <greg@blackbox>
+Date: Tue, 14 May 2013 11:31:43 +0200
+Subject: [PATCH 2/2] wpa_supplicant: reduce scan timeout to workaround ar6000
+ problem
+
+Port of commit 1a14419d from wpa_supplicant_8.
+
+Change-Id: I485f76df6934645af3fe2b658cae7b19e6aa9212
+---
+ wpa_supplicant/src/drivers/driver_wext.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/wpa_supplicant/src/drivers/driver_wext.c b/wpa_supplicant/src/drivers/driver_wext.c
+index c4dd036..68c51b8 100644
+--- a/wpa_supplicant/src/drivers/driver_wext.c
++++ b/wpa_supplicant/src/drivers/driver_wext.c
+@@ -1112,7 +1112,7 @@ static void wpa_driver_wext_set_scan_timeout(void *priv)
+ 		 * when scan is complete, so use longer timeout to avoid race
+ 		 * conditions with scanning and following association request.
+ 		 */
+-		timeout = 30;
++		timeout = 5;
+ 	}
+ 	wpa_printf(MSG_DEBUG, "Scan requested - scan timeout %d seconds",
+ 		   timeout);
+-- 
+1.8.2.1
+

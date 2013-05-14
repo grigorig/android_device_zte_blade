@@ -1,7 +1,7 @@
-From 2a9915922a0bbb633f3e2fc1e4148124e9bf34a5 Mon Sep 17 00:00:00 2001
+From 83d3c2f1c35ecbc175e8554cbe5614ea1b0440a0 Mon Sep 17 00:00:00 2001
 From: Konsta <konsta09@gmail.com>
 Date: Sat, 25 Aug 2012 10:31:11 +0300
-Subject: [PATCH] hack for ad-hoc networks
+Subject: [PATCH 1/2] hack for ad-hoc networks
 
 thanks to kelvie & szym
 https://github.com/kelvie/android-wpa_supplicant/commit/8415a970a26496f5e2c38f37564afbb526cdae97
@@ -9,7 +9,7 @@ http://szym.net/android/adhoc-wpa-supp.html
 
 Change-Id: I3164621ba74a8331a17960577cb6fa485b0c8f44
 ---
- wpa_supplicant/ctrl_iface.c |   41 +++++++++++++++++++++++++++++------------
+ wpa_supplicant/ctrl_iface.c | 41 +++++++++++++++++++++++++++++------------
  1 file changed, 29 insertions(+), 12 deletions(-)
 
 diff --git a/wpa_supplicant/ctrl_iface.c b/wpa_supplicant/ctrl_iface.c
@@ -86,5 +86,5 @@ index 9b2114b..ae9b1e3 100644
  		wpa_printf(MSG_DEBUG, "CTRL_IFACE: Failed to set network "
  			   "variable '%s'", name);
 -- 
-1.7.9.5
+1.8.2.1
 
