@@ -1,0 +1,35 @@
+From 8cfff9bf2477053b54ee8027f3c73e530b145a16 Mon Sep 17 00:00:00 2001
+From: Grigori Goronzy <greg@chown.ath.cx>
+Date: Sun, 8 Jun 2014 19:11:59 +0200
+Subject: [PATCH 3/3] Hide effects
+
+They don't work correctly with Blade.
+
+Change-Id: If222787a6f969b3ba6e2ea9ddd667f3874560a4b
+---
+ res/xml/video_preferences.xml | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/res/xml/video_preferences.xml b/res/xml/video_preferences.xml
+index abc5dfe..a0b9297 100644
+--- a/res/xml/video_preferences.xml
++++ b/res/xml/video_preferences.xml
+@@ -54,6 +54,7 @@
+             camera:icons="@array/camera_id_icons"
+             camera:entries="@array/camera_id_entries"
+             camera:largeIcons="@array/camera_id_largeicons"/>
++    <!--
+     <IconListPreference
+             camera:key="pref_video_effect_key"
+             camera:defaultValue="@string/pref_video_effect_default"
+@@ -62,6 +63,7 @@
+             camera:largeIcons="@array/video_effect_icons"
+             camera:entries="@array/pref_video_effect_entries"
+             camera:entryValues="@array/pref_video_effect_entryvalues" />
++    -->
+     <RecordLocationPreference
+             camera:key="pref_camera_recordlocation_key"
+             camera:defaultValue="@string/pref_camera_recordlocation_default"
+-- 
+1.8.3.2
+

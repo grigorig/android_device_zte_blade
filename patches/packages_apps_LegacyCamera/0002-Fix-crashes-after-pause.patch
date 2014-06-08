@@ -1,7 +1,7 @@
-From ea622ba34f9529835dbd4c02554240e9592439db Mon Sep 17 00:00:00 2001
+From 629937f7f9b4131e1fc1e67efe88052ac7a358b3 Mon Sep 17 00:00:00 2001
 From: Grigori Goronzy <greg@blackbox>
 Date: Mon, 18 Mar 2013 12:51:51 +0100
-Subject: [PATCH 2/2] Fix crashes after pause
+Subject: [PATCH 2/3] Fix crashes after pause
 
 The camera was incorrectly using MediaActionSound. The documentation
 says:
@@ -41,5 +41,5 @@ index 2ca7944..9d86446 100644
  
          // Clear UI.
 -- 
-1.8.2
+1.8.3.2
 
