@@ -72,7 +72,7 @@ public class DeviceSettings extends PreferenceActivity {
 
         if (prefs.getBoolean(KEY_BUTTON_BACKLIGHT, true)) {
             Utils.setWritable(BUTTON_BACKLIGHT_FILE);
-            Utils.writeValue(BUTTON_BACKLIGHT_FILE, 1);
+            //Utils.writeValue(BUTTON_BACKLIGHT_FILE, 1);
         } else {
             Utils.writeValue(BUTTON_BACKLIGHT_FILE, 0);
             Utils.setNonWritable(BUTTON_BACKLIGHT_FILE);
