@@ -1,7 +1,7 @@
-From 85f98bf7915f1daff2d857d1487c7e4df4d91c32 Mon Sep 17 00:00:00 2001
+From dd794ab2637ca8ea24c3ce6c85c311b723d13a51 Mon Sep 17 00:00:00 2001
 From: Neti Ravi Kumar <ravineti@codeaurora.org>
 Date: Thu, 15 Nov 2012 19:15:09 +0200
-Subject: [PATCH 1/2] surfacetexture: Select texture target based on pixel
+Subject: [PATCH 2/3] surfacetexture: Select texture target based on pixel
  format
 
 Adreno is not optimized for GL_TEXTURE_EXTERNAL_OES, making GPU
@@ -235,5 +235,5 @@ index 84a9060..8345f85 100644
              recomputeVisibleRegions = true;
              return;
 -- 
-1.8.2
+1.8.3.2
 
