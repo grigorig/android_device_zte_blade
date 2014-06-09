@@ -1,0 +1,584 @@
+From 0ec3cf4cedcb2222f4231c299a30d02f5be79e07 Mon Sep 17 00:00:00 2001
+From: Elliott Hughes <enh@google.com>
+Date: Tue, 6 Aug 2013 14:52:30 -0700
+Subject: [PATCH 2/2] Bumper ZipFile/ZipEntry backport.
+
+Bug: https://code.google.com/p/android/issues/detail?id=58465
+Bug: 8219321
+Bug: 8476102
+Bug: 8617715
+Bug: 9695860
+Bug: 9950697
+Bug: 10148349
+Bug: 10227498
+Change-Id: I94c3e9664a429c94c336115618a46283a13996e0
+---
+ luni/src/main/java/java/util/zip/ZipEntry.java     |  21 +-
+ luni/src/main/java/java/util/zip/ZipFile.java      |  52 +++-
+ .../main/java/java/util/zip/ZipInputStream.java    |   4 +
+ .../java/libcore/java/util/zip/ZipFileTest.java    | 342 ++++++++++++++++-----
+ 4 files changed, 329 insertions(+), 90 deletions(-)
+
+diff --git a/luni/src/main/java/java/util/zip/ZipEntry.java b/luni/src/main/java/java/util/zip/ZipEntry.java
+index 75e319d..b5d5b36 100644
+--- a/luni/src/main/java/java/util/zip/ZipEntry.java
++++ b/luni/src/main/java/java/util/zip/ZipEntry.java
+@@ -21,6 +21,7 @@ import java.io.IOException;
+ import java.io.InputStream;
+ import java.nio.ByteOrder;
+ import java.nio.charset.Charsets;
++import java.util.Arrays;
+ import java.util.Calendar;
+ import java.util.Date;
+ import java.util.GregorianCalendar;
+@@ -359,7 +360,13 @@ public class ZipEntry implements ZipConstants, Cloneable {
+              throw new ZipException("Central Directory Entry not found");
+         }
+ 
+-        it.seek(10);
++        it.seek(8);
++        int gpbf = it.readShort() & 0xffff;
++
++        if ((gpbf & ZipFile.GPBF_UNSUPPORTED_MASK) != 0) {
++            throw new ZipException("Invalid General Purpose Bit Flag: " + gpbf);
++        }
++
+         compressionMethod = it.readShort() & 0xffff;
+         time = it.readShort() & 0xffff;
+         modDate = it.readShort() & 0xffff;
+@@ -379,6 +386,9 @@ public class ZipEntry implements ZipConstants, Cloneable {
+ 
+         byte[] nameBytes = new byte[nameLength];
+         Streams.readFully(in, nameBytes, 0, nameBytes.length);
++        if (containsNulByte(nameBytes)) {
++            throw new ZipException("Filename contains NUL byte: " + Arrays.toString(nameBytes));
++        }
+         name = new String(nameBytes, 0, nameBytes.length, Charsets.UTF_8);
+ 
+         // The RI has always assumed UTF-8. (If GPBF_UTF8_FLAG isn't set, the encoding is
+@@ -394,4 +404,13 @@ public class ZipEntry implements ZipConstants, Cloneable {
+             Streams.readFully(in, extra, 0, extraLength);
+         }
+     }
++
++    private static boolean containsNulByte(byte[] bytes) {
++        for (byte b : bytes) {
++            if (b == 0) {
++                return true;
++            }
++        }
++        return false;
++    }
+ }
+diff --git a/luni/src/main/java/java/util/zip/ZipFile.java b/luni/src/main/java/java/util/zip/ZipFile.java
+index a0c34a3..b538177 100644
+--- a/luni/src/main/java/java/util/zip/ZipFile.java
++++ b/luni/src/main/java/java/util/zip/ZipFile.java
+@@ -49,6 +49,12 @@ import libcore.io.Streams;
+  */
+ public class ZipFile implements ZipConstants {
+     /**
++     * General Purpose Bit Flags, Bit 0.
++     * If set, indicates that the file is encrypted.
++     */
++    static final int GPBF_ENCRYPTED_FLAG = 1 << 0;
++
++    /**
+      * General Purpose Bit Flags, Bit 3.
+      * If this bit is set, the fields crc-32, compressed
+      * size and uncompressed size are set to zero in the
+@@ -70,6 +76,16 @@ public class ZipFile implements ZipConstants {
+     static final int GPBF_UTF8_FLAG = 1 << 11;
+ 
+     /**
++     * Supported General Purpose Bit Flags Mask.
++     * Bit mask of bits not supported.
++     * Note: The only bit that we will enforce at this time
++     * is the encrypted bit. Although other bits are not supported,
++     * we must not enforce them as this could break some legitimate
++     * use cases (See http://b/8617715).
++     */
++    static final int GPBF_UNSUPPORTED_MASK = GPBF_ENCRYPTED_FLAG;
++
++    /**
+      * Open ZIP file for read.
+      */
+     public static final int OPEN_READ = 1;
+@@ -254,22 +270,34 @@ public class ZipFile implements ZipConstants {
+         RandomAccessFile raf = mRaf;
+         synchronized (raf) {
+             // We don't know the entry data's start position. All we have is the
+-            // position of the entry's local header. At position 28 we find the
+-            // length of the extra data. In some cases this length differs from
+-            // the one coming in the central header.
+-            RAFStream rafstrm = new RAFStream(raf, entry.mLocalHeaderRelOffset + 28);
+-            DataInputStream is = new DataInputStream(rafstrm);
+-            int localExtraLenOrWhatever = Short.reverseBytes(is.readShort()) & 0xffff;
++            // position of the entry's local header. At position 6 we find the
++            // General Purpose Bit Flag.
++            // http://www.pkware.com/documents/casestudies/APPNOTE.TXT
++            RAFStream rafStream= new RAFStream(raf, entry.mLocalHeaderRelOffset + 6);
++            DataInputStream is = new DataInputStream(rafStream);
++            int gpbf = Short.reverseBytes(is.readShort()) & 0xffff;
++            if ((gpbf & ZipFile.GPBF_UNSUPPORTED_MASK) != 0) {
++                throw new ZipException("Invalid General Purpose Bit Flag: " + gpbf);
++            }
++
++            // Offset 26 has the file name length, and offset 28 has the extra field length.
++            // These lengths can differ from the ones in the central header.
++            is.skipBytes(18);
++            int fileNameLength = Short.reverseBytes(is.readShort()) & 0xffff;
++            int extraFieldLength = Short.reverseBytes(is.readShort()) & 0xffff;
+             is.close();
+ 
+-            // Skip the name and this "extra" data or whatever it is:
+-            rafstrm.skip(entry.nameLength + localExtraLenOrWhatever);
+-            rafstrm.mLength = rafstrm.mOffset + entry.compressedSize;
++            // Skip the variable-size file name and extra field data.
++            rafStream.skip(fileNameLength + extraFieldLength);
++
++            // The compressed or stored file data follows immediately after.
+             if (entry.compressionMethod == ZipEntry.DEFLATED) {
+-                int bufSize = Math.max(1024, (int)Math.min(entry.getSize(), 65535L));
+-                return new ZipInflaterInputStream(rafstrm, new Inflater(true), bufSize, entry);
++                rafStream.mLength = rafStream.mOffset + entry.compressedSize;
++                int bufSize = Math.max(1024, (int) Math.min(entry.getSize(), 65535L));
++                return new ZipInflaterInputStream(rafStream, new Inflater(true), bufSize, entry);
+             } else {
+-                return rafstrm;
++                rafStream.mLength = rafStream.mOffset + entry.size;
++                return rafStream;
+             }
+         }
+     }
+diff --git a/luni/src/main/java/java/util/zip/ZipInputStream.java b/luni/src/main/java/java/util/zip/ZipInputStream.java
+index d082fc7..788e90b 100644
+--- a/luni/src/main/java/java/util/zip/ZipInputStream.java
++++ b/luni/src/main/java/java/util/zip/ZipInputStream.java
+@@ -245,6 +245,10 @@ public class ZipInputStream extends InflaterInputStream implements ZipConstants
+             throw new ZipException("Cannot read local header version " + version);
+         }
+         int flags = peekShort(LOCFLG - LOCVER);
++        if ((flags & ZipFile.GPBF_UNSUPPORTED_MASK) != 0) {
++            throw new ZipException("Invalid General Purpose Bit Flag: " + flags);
++        }
++
+         hasDD = ((flags & ZipFile.GPBF_DATA_DESCRIPTOR_FLAG) != 0);
+         int ceLastModifiedTime = peekShort(LOCTIM - LOCVER);
+         int ceLastModifiedDate = peekShort(LOCTIM - LOCVER + 2);
+diff --git a/luni/src/test/java/libcore/java/util/zip/ZipFileTest.java b/luni/src/test/java/libcore/java/util/zip/ZipFileTest.java
+index afceaba..020d8d9 100644
+--- a/luni/src/test/java/libcore/java/util/zip/ZipFileTest.java
++++ b/luni/src/test/java/libcore/java/util/zip/ZipFileTest.java
+@@ -26,16 +26,15 @@ import java.io.IOException;
+ import java.io.InputStream;
+ import java.util.Enumeration;
+ import java.util.Random;
++import java.util.zip.CRC32;
+ import java.util.zip.ZipEntry;
+ import java.util.zip.ZipException;
+ import java.util.zip.ZipFile;
+ import java.util.zip.ZipInputStream;
+ import java.util.zip.ZipOutputStream;
+ import junit.framework.TestCase;
+-import libcore.io.IoUtils;
+ 
+ public final class ZipFileTest extends TestCase {
+-
+     /**
+      * Exercise Inflater's ability to refill the zlib's input buffer. As of this
+      * writing, this buffer's max size is 64KiB compressed bytes. We'll write a
+@@ -45,7 +44,7 @@ public final class ZipFileTest extends TestCase {
+     public void testInflatingFilesRequiringZipRefill() throws IOException {
+         int originalSize = 1024 * 1024;
+         byte[] readBuffer = new byte[8192];
+-        ZipFile zipFile = new ZipFile(createZipFile(originalSize));
++        ZipFile zipFile = new ZipFile(createZipFile(1, originalSize));
+         for (Enumeration<? extends ZipEntry> e = zipFile.entries(); e.hasMoreElements(); ) {
+             ZipEntry zipEntry = e.nextElement();
+             assertTrue("This test needs >64 KiB of compressed data to exercise Inflater",
+@@ -57,7 +56,7 @@ public final class ZipFileTest extends TestCase {
+         zipFile.close();
+     }
+ 
+-    private static void replaceBytes(byte[] original, byte[] replacement, byte[] buffer) {
++    private static void replaceBytes(byte[] buffer, byte[] original, byte[] replacement) {
+         // Gotcha here: original and replacement must be the same length
+         assertEquals(original.length, replacement.length);
+         boolean found;
+@@ -80,37 +79,38 @@ public final class ZipFileTest extends TestCase {
+         }
+     }
+ 
++    private static void writeBytes(File f, byte[] bytes) throws IOException {
++        FileOutputStream out = new FileOutputStream(f);
++        out.write(bytes);
++        out.close();
++    }
++
+     /**
+      * Make sure we don't fail silently for duplicate entries.
+      * b/8219321
+      */
+-    public void testDuplicateEntries() throws IOException {
+-        String entryName = "test_file_name1";
+-        String tmpName = "test_file_name2";
+-
+-        // create the template data
+-        ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
+-        ZipOutputStream out = new ZipOutputStream(bytesOut);
+-        ZipEntry ze1 = new ZipEntry(tmpName);
+-        out.putNextEntry(ze1);
++    public void testDuplicateEntries() throws Exception {
++        String name1 = "test_file_name1";
++        String name2 = "test_file_name2";
++
++        // Create the good zip file.
++        ByteArrayOutputStream baos = new ByteArrayOutputStream();
++        ZipOutputStream out = new ZipOutputStream(baos);
++        out.putNextEntry(new ZipEntry(name2));
+         out.closeEntry();
+-        ZipEntry ze2 = new ZipEntry(entryName);
+-        out.putNextEntry(ze2);
++        out.putNextEntry(new ZipEntry(name1));
+         out.closeEntry();
+         out.close();
+ 
+-        // replace the bytes we don't like
+-        byte[] buf = bytesOut.toByteArray();
+-        replaceBytes(tmpName.getBytes(), entryName.getBytes(), buf);
++        // Rewrite one of the filenames.
++        byte[] buffer = baos.toByteArray();
++        replaceBytes(buffer, name2.getBytes(), name1.getBytes());
+ 
+-        // write the result to a file
+-        File badZip = File.createTempFile("badzip", "zip");
+-        badZip.deleteOnExit();
+-        FileOutputStream outstream = new FileOutputStream(badZip);
+-        outstream.write(buf);
+-        outstream.close();
++        // Write the result to a file.
++        File badZip = createTemporaryZipFile();
++        writeBytes(badZip, buffer);
+ 
+-        // see if we can still handle it
++        // Check that we refuse to load the modified file.
+         try {
+             ZipFile bad = new ZipFile(badZip);
+             fail();
+@@ -121,72 +121,260 @@ public final class ZipFileTest extends TestCase {
+     public void testInflatingStreamsRequiringZipRefill() throws IOException {
+         int originalSize = 1024 * 1024;
+         byte[] readBuffer = new byte[8192];
+-        ZipInputStream in = new ZipInputStream(new FileInputStream(createZipFile(originalSize)));
++        ZipInputStream in = new ZipInputStream(new FileInputStream(createZipFile(1, originalSize)));
+         while (in.getNextEntry() != null) {
+             while (in.read(readBuffer, 0, readBuffer.length) != -1) {}
+         }
+         in.close();
+     }
+ 
++    // http://code.google.com/p/android/issues/detail?id=36187
++    public void testZipFileLargerThan2GiB() throws IOException {
++        if (false) { // TODO: this test requires too much time and too much disk space!
++            File f = createZipFile(1024, 3*1024*1024);
++            ZipFile zipFile = new ZipFile(f);
++            int entryCount = 0;
++            for (Enumeration<? extends ZipEntry> e = zipFile.entries(); e.hasMoreElements(); ) {
++                ZipEntry zipEntry = e.nextElement();
++                ++entryCount;
++            }
++            assertEquals(1024, entryCount);
++            zipFile.close();
++        }
++    }
++
++    public void testZip64Support() throws IOException {
++        try {
++            createZipFile(64*1024, 0);
++            fail(); // Make this test more like testHugeZipFile when we have Zip64 support.
++        } catch (ZipException expected) {
++        }
++    }
++
+     /**
+-     * Compresses a single random file into a .zip archive.
++     * Compresses the given number of files, each of the given size, into a .zip archive.
+      */
+-    private File createZipFile(int uncompressedSize) throws IOException {
++    private File createZipFile(int entryCount, int entrySize) throws IOException {
++        File result = createTemporaryZipFile();
++
++        byte[] writeBuffer = new byte[8192];
++        Random random = new Random();
++
++        ZipOutputStream out = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(result)));
++        for (int entry = 0; entry < entryCount; ++entry) {
++            ZipEntry ze = new ZipEntry(Integer.toHexString(entry));
++            out.putNextEntry(ze);
++
++            for (int i = 0; i < entrySize; i += writeBuffer.length) {
++                random.nextBytes(writeBuffer);
++                int byteCount = Math.min(writeBuffer.length, entrySize - i);
++                out.write(writeBuffer, 0, byteCount);
++            }
++
++            out.closeEntry();
++        }
++
++        out.close();
++        return result;
++    }
++
++    private File createTemporaryZipFile() throws IOException {
+         File result = File.createTempFile("ZipFileTest", "zip");
+         result.deleteOnExit();
++        return result;
++    }
+ 
+-        ZipOutputStream out = new ZipOutputStream(new FileOutputStream(result));
+-        ZipEntry entry = new ZipEntry("random");
+-        out.putNextEntry(entry);
++    private ZipOutputStream createZipOutputStream(File f) throws IOException {
++        return new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(f)));
++    }
+ 
+-        byte[] writeBuffer = new byte[8192];
+-        Random random = new Random();
+-        for (int i = 0; i < uncompressedSize; i += writeBuffer.length) {
+-            random.nextBytes(writeBuffer);
+-            out.write(writeBuffer, 0, Math.min(writeBuffer.length, uncompressedSize - i));
++    public void testSTORED() throws IOException {
++        ZipOutputStream out = createZipOutputStream(createTemporaryZipFile());
++        CRC32 crc = new CRC32();
++
++        // Missing CRC, size, and compressed size => failure.
++        try {
++            ZipEntry ze = new ZipEntry("a");
++            ze.setMethod(ZipEntry.STORED);
++            out.putNextEntry(ze);
++            fail();
++        } catch (ZipException expected) {
++        }
++
++        // Missing CRC and compressed size => failure.
++        try {
++            ZipEntry ze = new ZipEntry("a");
++            ze.setMethod(ZipEntry.STORED);
++            ze.setSize(0);
++            out.putNextEntry(ze);
++            fail();
++        } catch (ZipException expected) {
++        }
++
++        // Missing CRC and size => failure.
++        try {
++            ZipEntry ze = new ZipEntry("a");
++            ze.setMethod(ZipEntry.STORED);
++            ze.setSize(0);
++            ze.setCompressedSize(0);
++            out.putNextEntry(ze);
++            fail();
++        } catch (ZipException expected) {
++        }
++
++        // Missing size and compressed size => failure.
++        try {
++            ZipEntry ze = new ZipEntry("a");
++            ze.setMethod(ZipEntry.STORED);
++            ze.setCrc(crc.getValue());
++            out.putNextEntry(ze);
++            fail();
++        } catch (ZipException expected) {
++        }
++
++        // Missing size is copied from compressed size.
++        {
++            ZipEntry ze = new ZipEntry("okay1");
++            ze.setMethod(ZipEntry.STORED);
++            ze.setCrc(crc.getValue());
++
++            assertEquals(-1, ze.getSize());
++            assertEquals(-1, ze.getCompressedSize());
++
++            ze.setCompressedSize(0);
++
++            assertEquals(-1, ze.getSize());
++            assertEquals(0, ze.getCompressedSize());
++
++            out.putNextEntry(ze);
++
++            assertEquals(0, ze.getSize());
++            assertEquals(0, ze.getCompressedSize());
++        }
++
++        // Missing compressed size is copied from size.
++        {
++            ZipEntry ze = new ZipEntry("okay2");
++            ze.setMethod(ZipEntry.STORED);
++            ze.setCrc(crc.getValue());
++
++            assertEquals(-1, ze.getSize());
++            assertEquals(-1, ze.getCompressedSize());
++
++            ze.setSize(0);
++
++            assertEquals(0, ze.getSize());
++            assertEquals(-1, ze.getCompressedSize());
++
++            out.putNextEntry(ze);
++
++            assertEquals(0, ze.getSize());
++            assertEquals(0, ze.getCompressedSize());
+         }
+ 
++        // Mismatched size and compressed size => failure.
++        try {
++            ZipEntry ze = new ZipEntry("a");
++            ze.setMethod(ZipEntry.STORED);
++            ze.setCrc(crc.getValue());
++            ze.setCompressedSize(1);
++            ze.setSize(0);
++            out.putNextEntry(ze);
++            fail();
++        } catch (ZipException expected) {
++        }
++
++        // Everything present => success.
++        ZipEntry ze = new ZipEntry("okay");
++        ze.setMethod(ZipEntry.STORED);
++        ze.setCrc(crc.getValue());
++        ze.setSize(0);
++        ze.setCompressedSize(0);
++        out.putNextEntry(ze);
++
++        out.close();
++    }
++
++    private String makeString(int count, String ch) {
++        StringBuilder sb = new StringBuilder();
++        for (int i = 0; i < count; ++i) {
++            sb.append(ch);
++        }
++        return sb.toString();
++    }
++
++    // https://code.google.com/p/android/issues/detail?id=58465
++    public void test_NUL_in_filename() throws Exception {
++        File file = createTemporaryZipFile();
++
++        // We allow creation of a ZipEntry whose name contains a NUL byte,
++        // mainly because it's not likely to happen by accident and it's useful for testing.
++        ZipOutputStream out = createZipOutputStream(file);
++        out.putNextEntry(new ZipEntry("hello"));
++        out.putNextEntry(new ZipEntry("hello\u0000"));
++        out.close();
++
++        // But you can't open a ZIP file containing such an entry, because we reject it
++        // when we find it in the central directory.
++        try {
++            ZipFile zipFile = new ZipFile(file);
++            fail();
++        } catch (ZipException expected) {
++        }
++    }
++
++    public void testNameLengthChecks() throws IOException {
++        // Is entry name length checking done on bytes or characters?
++        // Really it should be bytes, but the RI only checks characters at construction time.
++        // Android does the same, because it's cheap...
++        try {
++            new ZipEntry((String) null);
++            fail();
++        } catch (NullPointerException expected) {
++        }
++        new ZipEntry(makeString(0xffff, "a"));
++        try {
++            new ZipEntry(makeString(0xffff + 1, "a"));
++            fail();
++        } catch (IllegalArgumentException expected) {
++        }
++
++        // ...but Android won't let you create a zip file with a truncated name.
++        ZipOutputStream out = createZipOutputStream(createTemporaryZipFile());
++        ZipEntry ze = new ZipEntry(makeString(0xffff, "\u0666"));
++        try {
++            out.putNextEntry(ze);
++            fail(); // The RI fails this test; it just checks the character count at construction time.
++        } catch (IllegalArgumentException expected) {
++        }
+         out.closeEntry();
++        out.putNextEntry(new ZipEntry("okay")); // ZipOutputStream.close throws if you add nothing!
+         out.close();
+-        return result;
+-      }
+-
+-      public void testHugeZipFile() throws IOException {
+-          int expectedEntryCount = 64*1024 - 1;
+-          File f = createHugeZipFile(expectedEntryCount);
+-          ZipFile zipFile = new ZipFile(f);
+-          int entryCount = 0;
+-          for (Enumeration<? extends ZipEntry> e = zipFile.entries(); e.hasMoreElements(); ) {
+-              ZipEntry zipEntry = e.nextElement();
+-              ++entryCount;
+-          }
+-          assertEquals(expectedEntryCount, entryCount);
+-          zipFile.close();
+-      }
+-
+-      public void testZip64Support() throws IOException {
+-          try {
+-              createHugeZipFile(64*1024);
+-              fail(); // Make this test more like testHugeZipFile when we have Zip64 support.
+-          } catch (ZipException expected) {
+-          }
+-      }
+-
+-      /**
+-       * Compresses the given number of empty files into a .zip archive.
+-       */
+-      private File createHugeZipFile(int count) throws IOException {
+-          File result = File.createTempFile("ZipFileTest", "zip");
+-          result.deleteOnExit();
+-
+-          ZipOutputStream out = new ZipOutputStream(new BufferedOutputStream(new FileOutputStream(result)));
+-          for (int i = 0; i < count; ++i) {
+-              ZipEntry entry = new ZipEntry(Integer.toHexString(i));
+-              out.putNextEntry(entry);
+-              out.closeEntry();
+-          }
+-
+-          out.close();
+-          return result;
+-      }
++    }
++
++    public void testCrc() throws IOException {
++        ZipEntry ze = new ZipEntry("test");
++        ze.setMethod(ZipEntry.STORED);
++        ze.setSize(4);
++
++        // setCrc takes a long, not an int, so -1 isn't a valid CRC32 (because it's 64 bits).
++        try {
++            ze.setCrc(-1);
++        } catch (IllegalArgumentException expected) {
++        }
++
++        // You can set the CRC32 to 0xffffffff if you're slightly more careful though...
++        ze.setCrc(0xffffffffL);
++        assertEquals(0xffffffffL, ze.getCrc());
++
++        // And it actually works, even though we use -1L to mean "no CRC set"...
++        ZipOutputStream out = createZipOutputStream(createTemporaryZipFile());
++        out.putNextEntry(ze);
++        out.write(-1);
++        out.write(-1);
++        out.write(-1);
++        out.write(-1);
++        out.closeEntry();
++        out.close();
++    }
+ }
+-- 
+1.8.3.2
+
