@@ -65,6 +65,9 @@ on boot
     chown system system /sys/devices/platform/msm_sdcc.4/polling
     write /sys/bus/platform/drivers/msm_sdcc/msm_sdcc.1/polling 1
 
+# Try to avoid direct reclaim
+    write /proc/sys/vm/extra_free_kbytes 3072
+
 service dhcp-service /system/bin/netcfg wlan0 dhcp
     class main
     oneshot
